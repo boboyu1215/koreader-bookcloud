@@ -1,0 +1,27 @@
+name: 问题反馈 / Bug report
+description: 安装、搜索、下载或阅读遇到了问题
+title: "[Bug] "
+body:
+  - type: input
+    id: device
+    attributes:
+      label: 设备型号 / Device
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: KOReader 与 BookCloud 版本
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 操作步骤、预期与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 错误提示或截图
+      description: 请移除设备凭据、管理口令和带签名的下载地址。

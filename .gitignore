@@ -1,0 +1,17 @@
+# Local credentials, data and development files
+.env
+.env.*
+!.env.example
+.private/
+data/
+*.db
+*.db-*
+*.sqlite*
+*token*
+*signing-key*
+bookcloud.lua
+.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+dist/

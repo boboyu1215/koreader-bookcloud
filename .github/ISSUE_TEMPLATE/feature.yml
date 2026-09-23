@@ -1,0 +1,9 @@
+name: 改进建议 / Feature request
+description: 告诉我你希望怎样找书和阅读
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你遇到了什么问题？希望如何改善？
+    validations:
+      required: true

@@ -1,0 +1,17 @@
+{
+  "id": "my-library",
+  "name": "我的书库（请替换示例地址）",
+  "type": "catalog",
+  "enabled": false,
+  "books": [
+    {
+      "title": "示例书名",
+      "authors": ["作者"],
+      "language": "zh-Hans",
+      "format": "epub",
+      "publisher": "出版社",
+      "version_label": "示例版本",
+      "url": "https://example.com/replace-with-real-book.epub"
+    }
+  ]
+}

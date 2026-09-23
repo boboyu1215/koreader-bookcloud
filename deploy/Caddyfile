@@ -1,0 +1,5 @@
+{$BOOKCLOUD_HOST} {
+    reverse_proxy bookcloud:8080 {
+        flush_interval -1
+    }
+}

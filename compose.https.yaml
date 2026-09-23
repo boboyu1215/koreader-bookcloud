@@ -1,0 +1,20 @@
+# Optional public HTTPS entry point. Requires a domain and ports 80/443.
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      BOOKCLOUD_HOST: ${BOOKCLOUD_HOST:?Set BOOKCLOUD_HOST in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      bookcloud:
+        condition: service_healthy
+volumes:
+  caddy-data:
+  caddy-config:

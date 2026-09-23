@@ -1,0 +1,4 @@
+beautifulsoup4==4.13.4
+soupsieve==2.7
+regex==2024.11.6
+typing-extensions==4.16.0
