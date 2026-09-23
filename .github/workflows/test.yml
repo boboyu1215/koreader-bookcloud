@@ -17,3 +17,11 @@ jobs:
       - run: docker compose config --quiet
       - run: BOOKCLOUD_HOST=books.example.com docker compose -f compose.yaml -f compose.https.yaml config --quiet
       - run: docker compose build
+      - name: Verify fresh deployment and non-root data volume
+        run: |
+          docker compose up -d --wait --wait-timeout 60
+          curl --fail http://127.0.0.1:18083/bookcloud/health
+          docker compose exec -T bookcloud python -c "import os; from pathlib import Path; assert os.getuid() == 10001; assert all(len((Path('/data') / n).read_text().strip()) >= 32 for n in ('admin-token', 'device-token', 'signing-key'))"
+      - name: Clean up test deployment
+        if: always()
+        run: docker compose down -v
