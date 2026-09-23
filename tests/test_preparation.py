@@ -37,5 +37,5 @@ class PreparationTests(unittest.TestCase):
   def toc(rules,url,fetch):
    fetch(url)
    return [('One','https://example.org/1')]
-  with patch.object(app.legado,'chapters',side_effect=toc),patch.object(app.legado,'chapter_text',return_value='Readable chapter content.'),patch.object(app,'fetch',side_effect=[TimeoutError(),b'ok']) as fetch:
+  with patch.object(app.legado,'chapters',side_effect=toc),patch.object(app.legado,'chapter_text',return_value='Readable chapter content.'),patch.object(app,'_fetch_once',side_effect=[TimeoutError(),b'ok']) as fetch,patch.object(app.time,'sleep'):
    app.download_state(self.e,True);self.assertEqual(self.finish()['status'],'ready');self.assertEqual(fetch.call_count,2)

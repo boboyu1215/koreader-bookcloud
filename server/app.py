@@ -21,6 +21,7 @@ SEARCH_SLOTS = threading.BoundedSemaphore(3)
 PREPARE_SLOTS = threading.BoundedSemaphore(1)
 JOBS = {}
 AUTH_FAILURES = {}
+PAIRING = {}
 
 def db():
     c = sqlite3.connect(DATA / 'bookcloud.db', timeout=10)
@@ -63,35 +64,105 @@ class PinnedHTTPS(http.client.HTTPSConnection):
         raw=socket.create_connection((self.ip,443),timeout=self.timeout)
         self.sock=self._context.wrap_socket(raw,server_hostname=self.host)
 
-def fetch(url, limit=4*1024*1024, method="GET", body=None):
-    """Validate every redirect and pin the validated public IP for TLS connection."""
-    deadline=time.monotonic()+35
+class UpstreamError(ValueError):
+    def __init__(self, message, status=None, retryable=False, retry_after=0):
+        super().__init__(message)
+        self.status = status
+        self.retryable = retryable
+        self.retry_after = retry_after
+
+
+def _fetch_once(url, limit, method, body, deadline):
+    """Revalidate redirects and pin the checked public address on every attempt."""
     for _ in range(4):
-        u,ip=public_target(url)
-        conn=PinnedHTTPS(u.hostname,ip)
+        if time.monotonic() >= deadline:
+            raise UpstreamError('书源响应超时', retryable=True)
+        u, ip = public_target(url)
+        conn = PinnedHTTPS(u.hostname, ip)
+        conn.timeout = min(12, max(.1, deadline - time.monotonic()))
         try:
-            headers={'User-Agent':'BookCloud/0.1 (+personal ereader)','Accept-Encoding':'identity'}
-            if body is not None:headers['Content-Type']='application/x-www-form-urlencoded'
-            conn.request(method,(u.path or '/')+('?' + u.query if u.query else ''),body=body,headers=headers)
-            r=conn.getresponse()
-            if r.status in (301,302,303,307,308):
-                url=urljoin(url,r.getheader('Location',''))
-                if r.status in (301,302,303):method='GET';body=None
+            headers = {'User-Agent': 'BookCloud/0.2 (+personal ereader)', 'Accept-Encoding': 'identity'}
+            if body is not None:
+                headers['Content-Type'] = 'application/x-www-form-urlencoded'
+            conn.request(method, (u.path or '/') + ('?' + u.query if u.query else ''), body=body, headers=headers)
+            response = conn.getresponse()
+            if response.status in (301, 302, 303, 307, 308):
+                url = urljoin(url, response.getheader('Location', ''))
+                if response.status in (301, 302, 303):
+                    method, body = 'GET', None
                 continue
-            if r.status != 200: raise ValueError('来源返回 HTTP '+str(r.status))
-            length=r.getheader('Content-Length')
-            if length and int(length)>limit:raise ValueError('文件超过下载大小限制')
-            chunks=[];total=0
+            if response.status != 200:
+                retryable = response.status in (408, 429, 500, 502, 503, 504)
+                delay = response.getheader('Retry-After', '')
+                delay = min(int(delay), 4) if delay.isdigit() else 0
+                raise UpstreamError('书源暂时不可用（HTTP %s）' % response.status,
+                                    response.status, retryable, delay)
+            length = response.getheader('Content-Length')
+            if length and int(length) > limit:
+                raise ValueError('文件超过下载大小限制')
+            chunks, total = [], 0
             while True:
-                if time.monotonic()>deadline:raise ValueError('来源响应超时，请重试')
-                chunk=r.read(min(65536,limit-total+1))
-                if not chunk:break
-                total+=len(chunk)
-                if total>limit:raise ValueError('来源内容过大')
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise UpstreamError('书源响应超时', retryable=True)
+                if conn.sock is not None:
+                    conn.sock.settimeout(min(12, remaining))
+                chunk = response.read(min(65536, limit-total+1))
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > limit:
+                    raise ValueError('来源内容过大')
                 chunks.append(chunk)
             return b''.join(chunks)
-        finally:conn.close()
+        finally:
+            conn.close()
     raise ValueError('来源跳转次数过多')
+
+
+def fetch(url, limit=4*1024*1024, method="GET", body=None):
+    # POST is used only by static-source search, never for purchases/mutations.
+    # One total deadline prevents retries from multiplying request duration.
+    deadline = time.monotonic() + 35
+    for attempt in range(3):
+        try:
+            return _fetch_once(url, limit, method, body, deadline)
+        except ssl.SSLCertVerificationError:
+            raise UpstreamError('书源 HTTPS 证书无效，请更换来源') from None
+        except UpstreamError as exc:
+            error = exc
+        except (TimeoutError, ConnectionError, ssl.SSLError, http.client.HTTPException, OSError):
+            error = UpstreamError('书源连接超时或中断', retryable=True)
+        if not error.retryable or attempt == 2:
+            raise error
+        delay = max(error.retry_after, .5 * (2 ** attempt))
+        if time.monotonic() + delay >= deadline:
+            raise error
+        time.sleep(delay)
+
+
+def create_pairing():
+    code = f'{secrets.randbelow(100000000):08d}'
+    with LOCK:
+        PAIRING.clear()
+        PAIRING.update(digest=hashlib.sha256(code.encode()).hexdigest(),
+                       expires=time.time()+300, failures=0)
+    return {'code': code, 'expires_in': 300}
+
+
+def redeem_pairing(code):
+    code = str(code).strip()
+    with LOCK:
+        if not PAIRING or PAIRING['expires'] < time.time() or PAIRING['failures'] >= 10:
+            raise ValueError('配对码已失效，请在电脑端重新生成')
+        if not re.fullmatch(r'[0-9]{8}', code) or not hmac.compare_digest(
+                PAIRING['digest'], hashlib.sha256(code.encode()).hexdigest()):
+            PAIRING['failures'] += 1
+            raise ValueError('配对码不正确，请检查后重试')
+        key = token('device-token')
+        PAIRING.clear()  # A successful code can only be redeemed once.
+    return {'ok': True, 'device_token': key}
+
 
 def source_list():
     with db() as c:return [json.loads(r['config']) for r in c.execute('SELECT config FROM sources ORDER BY id')]
@@ -225,6 +296,31 @@ def relevance(q,book):
     ratio=difflib.SequenceMatcher(None,q,title).ratio()
     return int(ratio*50) if len(q)>=4 and ratio>=.8 else 0
 
+def chinese_number(text):
+    digits = dict(zip('零〇一二两三四五六七八九', (0, 0, 1, 2, 2, 3, 4, 5, 6, 7, 8, 9)))
+    if text.isdecimal():
+        return int(text)
+    if not any(c in text for c in '十百千'):
+        return int(''.join(str(digits[c]) for c in text))
+    total = current = 0
+    for char in text:
+        if char in digits:
+            current = digits[char]
+        else:
+            total += (current or 1) * {'十': 10, '百': 100, '千': 1000}[char]
+            current = 0
+    return total + current
+
+
+def natural_title(title):
+    title = unicodedata.normalize('NFKC', title).casefold()
+    # Convert only explicit volume markers; do not rewrite words like 第一性原理.
+    title = re.sub(r'第([0-9零〇一二两三四五六七八九十百千]+)([卷册部集])',
+                   lambda m: str(chinese_number(m[1])) + m[2], title)
+    return tuple((1, int(part)) if part.isdecimal() else (0, part.strip())
+                 for part in re.split(r'(\d+)', title) if part)
+
+
 def search(q,only=None):
     sources=[s for s in source_list() if s['enabled'] and (not only or s['id']==only)]
     warnings=[]; editions=[]
@@ -260,7 +356,7 @@ def search(q,only=None):
     result=[]
     for w in works.values():
         w['editions']=list(w['editions'].values()); w['edition_count']=len(w['editions']);result.append(w)
-    result.sort(key=lambda w:relevance(q,w),reverse=True)
+    result.sort(key=lambda w: (-relevance(q, w), natural_title(w['title']), w['work_id']))
     return {'works':result,'partial':bool(warnings),'warnings':warnings,'source_count':len(sources),
             'note':'每个远程书源查询首批结果；请使用更具体的书名或作者缩小范围。'}
 
@@ -291,64 +387,111 @@ def validate_file(data,fmt):
 def edition_source(e):
     return next(s for s in source_list() if s['id']==e['source_id'] and s['enabled'])
 
-def prepared_path(eid):
-    if not re.fullmatch(r'[a-f0-9]{24}',eid):raise ValueError('版本编号无效')
-    return DATA/'prepared'/(eid+'.epub')
+def prepared_path(eid, fmt='epub'):
+    if not re.fullmatch(r'[a-f0-9]{24}', eid) or fmt not in ('epub', 'pdf', 'txt'):
+        raise ValueError('版本编号或文件格式无效')
+    return DATA/'prepared'/(eid+'.'+fmt)
 
-def prepare_book(e,source):
-    eid=e['edition_id'];deadline=time.monotonic()+600
+
+def cache_book(e, data):
+    validate_file(data, e['format'])
+    if len(data) > MAX_FILE:
+        raise ValueError('文件超过 50 MB')
+    path = prepared_path(e['edition_id'], e['format'])
+    path.parent.mkdir(exist_ok=True)
+    existing = [p for p in path.parent.iterdir() if p.suffix in ('.epub', '.pdf', '.txt')]
+    for old in sorted(existing, key=lambda p: p.stat().st_mtime)[:-3]:
+        old.unlink(missing_ok=True)
+    for old in path.parent.iterdir():
+        if old.stat().st_mtime < time.time()-3600:
+            old.unlink(missing_ok=True)
+    tmp = path.with_suffix('.part')
+    tmp.write_bytes(data)
+    tmp.replace(path)
+
+
+def prepare_book(e, source):
+    eid = e['edition_id']
+    deadline = time.monotonic()+600
+    stage = '获取文件'
     def bounded_fetch(url):
-        if time.monotonic()>deadline:raise ValueError('准备超时，请稍后重试')
-        for attempt in range(3):
-            try:return fetch(url)
-            except (TimeoutError,ConnectionError,ssl.SSLError,http.client.HTTPException,OSError):
-                if attempt==2 or time.monotonic()>deadline:raise ValueError('书源连接超时或中断，请稍后重试')
-                time.sleep(attempt+1)
+        if time.monotonic() > deadline:
+            raise ValueError('准备超时，请稍后重试')
+        return fetch(url)
     try:
-        chapters=legado.chapters(source['rules'],e['url'],bounded_fetch)
-        with LOCK:JOBS[eid].update(total=len(chapters))
-        urls={u for _,u in chapters};contents=[None]*len(chapters);size=0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-            futures={pool.submit(legado.chapter_text,source['rules'],url,bounded_fetch,urls):(i,name) for i,(name,url) in enumerate(chapters)}
-            try:
-                for f in concurrent.futures.as_completed(futures):
-                    i,name=futures[f];text=f.result();size+=len(text.encode())
-                    if size>MAX_FILE:raise ValueError('正文超过 50 MB，停止生成')
-                    contents[i]=(name,text)
-                    with LOCK:JOBS[eid]['completed']+=1
-            except Exception:
-                deadline=0
-                for f in futures:f.cancel()
-                raise
-        data=legado.make_epub(e['title'],e['authors'],contents);validate_file(data,'epub')
-        if len(data)>MAX_FILE:raise ValueError('文件超过 50 MB')
-        path=prepared_path(eid);path.parent.mkdir(exist_ok=True)
-        # At most four recently prepared books are cached; each expires after an hour.
-        for old in path.parent.glob('*.epub'):
-            if old.stat().st_mtime<time.time()-3600:old.unlink(missing_ok=True)
-        existing=sorted(path.parent.glob('*.epub'),key=lambda p:p.stat().st_mtime)
-        for old in existing[:-3]:old.unlink(missing_ok=True)
-        tmp=path.with_suffix('.part');tmp.write_bytes(data);tmp.replace(path)
-        with LOCK:JOBS[eid].update(status='ready')
+        if source['type'] != 'legado':
+            # Fetch before issuing a download URL, so the device never waits
+            # silently while an upstream retries or produces a gateway error.
+            data = fetch(e['url'], MAX_FILE)
+        else:
+            stage = '读取目录'
+            chapters = legado.chapters(source['rules'], e['url'], bounded_fetch)
+            with LOCK:
+                JOBS[eid].update(total=len(chapters))
+            urls = {u for _, u in chapters}
+            contents, size = [None]*len(chapters), 0
+            stage = '读取正文'
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+                futures = {pool.submit(legado.chapter_text, source['rules'], url, bounded_fetch, urls): (i, name)
+                           for i, (name, url) in enumerate(chapters)}
+                try:
+                    for future in concurrent.futures.as_completed(futures):
+                        i, name = futures[future]
+                        stage = '读取正文「' + name[:60] + '」'
+                        text = future.result()
+                        size += len(text.encode())
+                        if size > MAX_FILE:
+                            raise ValueError('正文超过 50 MB，停止生成')
+                        contents[i] = (name, text)
+                        with LOCK:
+                            JOBS[eid]['completed'] += 1
+                except Exception:
+                    deadline = 0
+                    for future in futures:
+                        future.cancel()
+                    raise
+            stage = '生成 EPUB'
+            data = legado.make_epub(e['title'], e['authors'], contents)
+        cache_book(e, data)
+        terminal = {'status': 'ready'}
     except Exception as exc:
-        with LOCK:JOBS[eid].update(status='failed',error=str(exc)[:180])
-    finally:PREPARE_SLOTS.release()
+        message = '书源「' + source['name'] + '」' + stage + '失败：' + str(exc)[:160]
+        terminal = {'status': 'failed', 'error': message, 'source_name': source['name'],
+                    'stage': stage, 'retryable': isinstance(exc, UpstreamError) and exc.retryable}
+        try:
+            with db() as c:
+                c.execute('INSERT OR REPLACE INTO source_status VALUES (?,?,?,?)',
+                          (source['id'], int(time.time()), 0, message))
+        except sqlite3.Error:
+            pass  # Failure details are still returned to the requesting device.
+    finally:
+        with LOCK:
+            JOBS[eid].update(terminal)
+            PREPARE_SLOTS.release()
 
-def download_state(e,start=False):
-    source=edition_source(e);eid=e['edition_id']
-    ready={'status':'ready','url':download_url(eid),'format':e['format'],'title':e['title'],'max_bytes':MAX_FILE}
-    if source['type']!='legado':return ready
-    path=prepared_path(eid)
-    if path.exists() and path.stat().st_mtime>time.time()-3600:return ready
+
+def download_state(e, start=False):
+    source = edition_source(e)
+    eid = e['edition_id']
+    ready = {'status': 'ready', 'url': download_url(eid), 'format': e['format'],
+             'title': e['title'], 'max_bytes': MAX_FILE}
+    path = prepared_path(eid, e['format'])
+    if path.exists() and path.stat().st_mtime > time.time()-3600:
+        return ready
     with LOCK:
-        job=JOBS.get(eid)
-        if job and job['status']=='preparing':return dict(job)
-        if not start:return dict(job) if job and job['status']=='failed' else {'status':'failed','error':'准备任务已失效，请重新下载'}
-        if not PREPARE_SLOTS.acquire(blocking=False):raise ValueError('正在准备其他书籍，请稍后重试')
-        if len(JOBS)>100:JOBS.clear()
-        JOBS[eid]={'status':'preparing','completed':0,'total':0}
-        threading.Thread(target=prepare_book,args=(e,source),daemon=True).start()
+        job = JOBS.get(eid)
+        if job and job['status'] == 'preparing':
+            return dict(job)
+        if not start:
+            return dict(job) if job and job['status'] == 'failed' else {'status': 'failed', 'error': '准备任务已失效，请重新下载'}
+        if not PREPARE_SLOTS.acquire(blocking=False):
+            raise ValueError('正在准备其他书籍，请稍后重试')
+        if len(JOBS) > 100:
+            JOBS.clear()
+        JOBS[eid] = {'status': 'preparing', 'completed': 0, 'total': 0}
+        threading.Thread(target=prepare_book, args=(e, source), daemon=True).start()
         return dict(JOBS[eid])
+
 
 def import_sources(incoming):
     if isinstance(incoming,dict):incoming=[incoming]
@@ -430,6 +573,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):self.handle_request('DELETE')
     def handle_request(self,method):
         try:self.route(method)
+        except UpstreamError as exc:self.send(502,{'error':str(exc),'code':'upstream_unavailable','retryable':exc.retryable})
         except (ValueError,KeyError,json.JSONDecodeError) as exc:self.send(400,{'error':str(exc)[:200]})
         except (BrokenPipeError,ConnectionResetError):pass
         except Exception:
@@ -439,7 +583,7 @@ class Handler(BaseHTTPRequestHandler):
         if p==PREFIX and method=='GET':return self.send(302,b'',headers={'Location':PREFIX+'/'})
         if p in (PREFIX+'/',PREFIX+'/admin') and method=='GET':
             return self.send(200,(ROOT/'admin.html').read_bytes(),'text/html; charset=utf-8',{'Content-Security-Policy':"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"})
-        if p==PREFIX+'/health' and method=='GET':return self.send(200,{'ok':True,'version':'0.2.0-beta.1'})
+        if p==PREFIX+'/health' and method=='GET':return self.send(200,{'ok':True,'version':'0.2.1-beta.1'})
         if p==PREFIX+'/admin/login' and method=='POST':
             if self.headers.get('X-BookCloud')!='1':return self.send(403,{'error':'请求无效'})
             now=time.time();ip=self.client_address[0]
@@ -458,19 +602,24 @@ class Handler(BaseHTTPRequestHandler):
             if not DOWNLOAD_SLOTS.acquire(blocking=False):return self.send(429,{'error':'下载繁忙，请稍后重试'})
             try:
                 e=get_edition(eid)
-                if edition_source(e)['type']=='legado':
-                    path=prepared_path(eid)
-                    if not path.exists() or path.stat().st_mtime<time.time()-3600:raise ValueError('文件缓存已过期，请重新下载')
-                    data=path.read_bytes()
-                else:data=fetch(e['url'],MAX_FILE)
+                edition_source(e)  # Recheck source still enabled before serving cached data.
+                path=prepared_path(eid,e['format'])
+                if not path.exists() or path.stat().st_mtime<time.time()-3600:
+                    raise ValueError('文件缓存已过期，请重新下载')
+                data=path.read_bytes()
                 validate_file(data,e['format'])
                 mime={'epub':'application/epub+zip','pdf':'application/pdf','txt':'text/plain'}[e['format']]
                 return self.send(200,data,mime,{'Content-Disposition':"attachment; filename=book."+e['format']+"; filename*=UTF-8''"+quote(e['title']+'.'+e['format'],safe=''),'X-Content-SHA256':hashlib.sha256(data).hexdigest()})
             finally:DOWNLOAD_SLOTS.release()
+        if p==PREFIX+'/api/v1/pair' and method=='POST':
+            return self.send(200,redeem_pairing(self.body().get('code','')))
         if not self.authenticated():return self.send(401,{'error':'需要登录或设备凭据'})
+        if p==PREFIX+'/api/v1/status' and method=='GET':
+            return self.send(200,{'ok':True})
         if p.startswith(PREFIX+'/admin/'):
             if not self.is_admin():return self.send(403,{'error':'需要管理员权限'})
             if method!='GET' and self.headers.get('X-BookCloud')!='1':return self.send(403,{'error':'请求无效'})
+            if p==PREFIX+'/admin/pairing' and method=='POST':return self.send(200,create_pairing())
             if p==PREFIX+'/admin/sources' and method=='GET':
                 with db() as c:status={r['id']:dict(r) for r in c.execute('SELECT * FROM source_status')}
                 with db() as c:pending=c.execute('SELECT COUNT(*) FROM source_inbox').fetchone()[0]

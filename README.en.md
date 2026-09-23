@@ -15,6 +15,9 @@ Search by title or author, choose an edition, download it, and open it in KORead
 - Search configured sources by title or author.
 - Group results into works and retain available editions.
 - Download EPUB, PDF or TXT files and read them offline.
+- Two-line titles with smaller metadata; hold to see full titles, and natural volume ordering.
+- On-device setup using a short-lived pairing code.
+- Bounded retries for transient upstream errors, file preparation before transfer and edition switching after failure.
 - Recent searches and a list of downloaded books.
 - Web-based source configuration, import, export and download testing.
 - OPDS, Gutendex, custom catalogs and a limited subset of static Legado text rules.
@@ -25,7 +28,7 @@ Search by title or author, choose an edition, download it, and open it in KORead
 2. Expose the service over HTTPS. An optional Caddy configuration is included: set `BOOKCLOUD_HOST` in `.env`, point its DNS to your server, and run `docker compose -f compose.yaml -f compose.https.yaml up -d --build`. Ports 80 and 443 must be available.
 3. Read the device credential with `docker compose exec bookcloud cat /data/device-token`. Keep it private. The separate `/data/admin-token` is for the web admin interface.
 4. Download the plugin ZIP from Releases. Extract `bookcloud.koplugin` into KOReader's `plugins` directory.
-5. With KOReader stopped, copy `examples/bookcloud.example.lua` to its `settings/bookcloud.lua`. Set your HTTPS service URL (including `/bookcloud`, without a trailing slash), device credential and writable download directory.
+5. Generate a pairing code in the web admin interface. On the reader, enter your HTTPS service URL and the 8-digit code (single use, expires after 5 minutes). Advanced settings also support manual device credentials and a custom download directory. Existing configuration files remain supported.
 6. Restart KOReader and open **云书库 · 搜书** from its menu. ZenOS is optional.
 
 On Kobo, the usual KOReader path is `.adds/koreader`, and the default download directory is `/mnt/onboard/book/云书库`. Adjust both for your installation.

@@ -16,7 +16,7 @@ BookCloud 包含两个部分：运行在阅读器上的 KOReader 插件，以及
 ```sh
 git clone https://github.com/boboyu1215/koreader-bookcloud.git
 cd koreader-bookcloud
-git checkout v0.2.0-beta.1
+git checkout v0.2.1-beta.1
 docker compose up -d --build
 docker compose ps
 curl --fail http://127.0.0.1:18083/bookcloud/health
@@ -65,11 +65,18 @@ docker compose exec bookcloud cat /data/device-token
 
 ## 3. 安装设备插件
 
-1. 从 [Releases](https://github.com/boboyu1215/koreader-bookcloud/releases) 下载 `bookcloud.koplugin-0.2.0-beta.1.zip`，不是 GitHub 自动生成的 Source code 包。
+1. 从 [Releases](https://github.com/boboyu1215/koreader-bookcloud/releases) 下载 `bookcloud.koplugin-0.2.1-beta.1.zip`，不是 GitHub 自动生成的 Source code 包。
 2. 退出 KOReader，再通过 USB 连接 Kobo。
 3. 解压安装包，把整个 `bookcloud.koplugin` 文件夹复制到设备的 `.adds/koreader/plugins/`。macOS Finder 可按 `Command + Shift + .` 显示隐藏目录。
-4. 将仓库中的 [bookcloud.example.lua](../examples/bookcloud.example.lua) 复制到 `.adds/koreader/settings/`，改名为 `bookcloud.lua`。
-5. 编辑 `base_url` 和 `device_token`。地址示例为 `https://books.example.com/bookcloud`，末尾不加 `/`。Kobo 默认下载目录可保留；其他设备请改为真实可写路径。
+4. 安全弹出设备、拔线并重启 KOReader，打开「云书库 · 搜书」。首次使用会自动进入连接设置。
+5. 在电脑管理页面的「连接阅读器」区域点击「生成配对码」。
+6. 在 Kobo 上输入服务地址和 8 位数字配对码，点击「连接并保存」。配对码 5 分钟有效、只能使用一次；生成新码会使旧码失效。
+
+旧的 `settings/bookcloud.lua` 配置仍可沿用，升级插件不要覆盖它。已配置设备可以通过「搜书 → 服务设置 / 连接检查」重新配对或检查连接。
+
+如果希望手动配置，可在连接页面点击「手动凭据」，填写 HTTPS 服务地址、设备凭据和下载目录；保存前会检查凭据是否有效。也可继续把 [bookcloud.example.lua](../examples/bookcloud.example.lua) 复制为 `settings/bookcloud.lua`。默认下载目录为 `/mnt/onboard/book/云书库`，其他设备需要修改。
+
+新版配对与连接检查要求服务端也更新到 0.2.1-beta.1 或以上。升级旧服务时先升级服务器，再更新设备插件。
 
 最终结构：
 
@@ -78,7 +85,8 @@ docker compose exec bookcloud cat /data/device-token
 ├── plugins/
 │   └── bookcloud.koplugin/
 │       ├── _meta.lua
-│       └── main.lua
+│       ├── main.lua
+│       └── bookcloudmenu.lua
 └── settings/
     └── bookcloud.lua
 ```
@@ -115,6 +123,8 @@ docker compose exec bookcloud cat /data/device-token
 | 提示尚未配置 | 检查 `settings/bookcloud.lua` 文件名、Lua 语法、HTTPS 地址及设备凭据 |
 | 401 / 需要凭据 | 确认使用 `device-token`，且没有复制多余空格或换行 |
 | 管理页面登录后又回登录页 | 必须通过 HTTPS 使用管理页面，Cookie 带 Secure 标记 |
+| 下载时书源 HTTP 502 / 503 / 504 | 服务会在同一时限内最多尝试 3 次；仍失败时显示具体来源和失败阶段。有其他版本时选择「选择其他版本」；持续 502 需要来源本身恢复 |
+| 配对码失效 | 配对码已使用、过期或错误尝试达到上限；在电脑管理页生成新码 |
 | 搜索超时 | 检查 Wi-Fi、证书和服务连通；确认反向代理关闭响应缓冲 |
 | 搜不到书 | 先在电脑端测试来源，尝试更准确的书名或作者；导入规则不代表已启用 |
 | 某些来源不可用 | 上游可能变化；阅读来源检测结果，不要把推荐书目误当成命中结果 |

@@ -20,6 +20,7 @@ out.mkdir(exist_ok=True)
 archive = out / f"bookcloud.koplugin-{version}.zip"
 files = {
     "bookcloud.koplugin/main.lua": ROOT / "plugin/bookcloud.koplugin/main.lua",
+    "bookcloud.koplugin/bookcloudmenu.lua": ROOT / "plugin/bookcloud.koplugin/bookcloudmenu.lua",
     "bookcloud.koplugin/_meta.lua": ROOT / "plugin/bookcloud.koplugin/_meta.lua",
     "bookcloud.koplugin/LICENSE": ROOT / "LICENSE",
     "bookcloud.koplugin/THIRD_PARTY_NOTICES.md": ROOT / "THIRD_PARTY_NOTICES.md",

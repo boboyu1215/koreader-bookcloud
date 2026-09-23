@@ -65,5 +65,6 @@ self:download(edition)
   with tempfile.TemporaryDirectory() as d:
    lua=self.make(d,preparing=True,failed=True)
    self.assertEqual(list(Path(d).iterdir()),[])
-   self.assertEqual(lua.globals().last_widget.text,'正文缺失')
+   self.assertIn('正文缺失',lua.globals().last_widget.text)
+   self.assertIn('测试/书',lua.globals().last_widget.text)
 if __name__=='__main__':unittest.main()
