@@ -5,3 +5,10 @@
 Lua 测试使用 Lupa 的 Lua 5.1 运行时及控件替身，不能替代 KOReader 真机渲染。GitHub Actions 还会运行 Docker 构建、全新数据卷启动及健康检查；实际状态见 [Actions](https://github.com/boboyu1215/koreader-bookcloud/actions)。
 
 公开 HTTPS、来源本身的在线状态、真机触控与其他机型仍需分别验收。旧版实机照片保留作参考，未冒充新版截图。
+
+## 本次结果
+
+- 47 项本地回归测试通过；37 项服务端测试也在实际部署镜像中通过。
+- [GitHub Actions](https://github.com/boboyu1215/koreader-bookcloud/actions/runs/35889355570) 完成全部测试、镜像构建、全新数据卷启动和健康检查。
+- 实际 HTTPS 入口通过设备认证与一次性配对验证；古登堡公版书搜索、后台文件准备、真实下载与 EPUB 完整性验证通过，下载文件 558,381 字节。
+- 新插件已写入一台已连接的 Kobo，文件摘要与发布源码一致，原设备设置保留；尚需拔线重启后验收真实排版与触控。不能将文件安装校验等同于真机 UI 验证。
